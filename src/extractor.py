@@ -1,10 +1,11 @@
 import pdfplumber
 import csv
 import logging
+import sqlite3
 from tqdm import tqdm
 
 logger = logging.getLogger("SpendingDataExtractor")
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.ERROR)
 handler = logging.StreamHandler()
 handler.setFormatter(
     logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -36,7 +37,7 @@ class SpendingDataExtractor:
         return all(cell == "" for cell in row)
 
     def _is_company_name(self, row):
-        return len(row) == 1 or row[1:] == ["", "", ""]
+        return len(row) == 1 or row[1:] == ["", "", ""] or len(row) == 2
 
     def _is_page_number(self, row):
         return row[0].replace("/", "").replace(",", "").isdigit()
@@ -63,9 +64,50 @@ class SpendingDataExtractor:
         # ABC DEF COMPANY 01/09/2025... -> ABC DEF
         return " ".join(line.split()[:2])
 
-    def extract_and_save(self, pdf_path, csv_output):
-        logger.info(f"Saving extracted data to CSV")
-        csv_rows = []
+    def save_to_csv_file(self, rows, csv_output):
+        logger.info(f"Saving data to CSV file {csv_output}")
+        with open(csv_output, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def save_to_sqlite(self, data, db_name, table_name):
+        """
+        Args:
+            data: A list of dictionaries.
+            db_name: The name of the SQLite database file.
+            table_name: The name of the table to create and insert data into.
+        """
+        logger.info(f"Saving data to SQLite database {db_name}")
+        conn = sqlite3.connect(db_name)
+        cursor = conn.cursor()
+
+        if data:
+            # Create table dynamically based on the keys of the first dictionary
+            create_table_sql = f"CREATE TABLE IF NOT EXISTS {table_name} ("
+            for key in data[0].keys():
+                create_table_sql += (
+                    f"{key} TEXT, "  # Assuming all values are text for simplicity
+                )
+            create_table_sql = create_table_sql.rstrip(", ") + ")"
+            cursor.execute(create_table_sql)
+
+            # Insert data
+            for row in data:
+                placeholders = ", ".join(["?"] * len(row))
+                insert_sql = f"INSERT INTO {table_name} VALUES ({placeholders})"
+                cursor.execute(insert_sql, list(row.values()))
+
+            conn.commit()
+        conn.close()
+
+    def extract_and_save(self, pdf_path, csv_output=None, sqlite_output=None):
+        if not csv_output and not sqlite_output:
+            raise ValueError("At least one output should be provided")
+        if csv_output and sqlite_output:
+            raise ValueError("Only one output should be provided")
+
+        rows = []
         # Track the last encountered values
         company_name = ""
         cardholder = ""
@@ -124,6 +166,7 @@ class SpendingDataExtractor:
                     if is_person_total:
                         cardholder = self._get_name_from_line(_first_line)
                         logger.info({"CARDHOLDER_FROM_MULTILINE": cardholder})
+
                     # if last line was empty or page title, this new line is a company
                     if is_empty_row or is_page_title:
                         company_name = _first_line
@@ -156,20 +199,19 @@ class SpendingDataExtractor:
                     logger.info({"CARDHOLDER_SPEND": row})
                     if row[0].strip() != "":
                         cardholder = row[0]
-                    csv_row = {
+                    data = {
                         "company": company_name,
                         "cardholder": cardholder,
                         "vendor": row[1],
                         "date": row[2],
                         "amount": self._dollar_amount_to_float(row[-1]),
                     }
-                    csv_rows.append(csv_row)
+                    rows.append(data)
             except Exception as e:
                 logger.error(f"Error processing row {row}: {e}")
-
-        with open(csv_output, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=csv_rows[0].keys())
-            writer.writeheader()
-            writer.writerows(csv_rows)
+        if csv_output:
+            self.save_to_csv_file(rows, csv_output)
+        elif sqlite_output:
+            self.save_to_sqlite(rows, sqlite_output, "spending_data")
 
         logger.info(f"Data extracted and saved to {csv_output}")

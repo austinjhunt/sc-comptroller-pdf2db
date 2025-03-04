@@ -11,7 +11,10 @@ def main():
     if not os.path.exists(pdf_path):
         downloader.download_report(month=month, year=year)
 
-    extractor.extract_and_save(pdf_path=pdf_path, csv_output=csv_path)
+    extractor.extract_and_save(
+        pdf_path=pdf_path,
+        sqlite_output="spending.db",
+    )
 
 
 if __name__ == "__main__":
